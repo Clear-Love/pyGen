@@ -7,5 +7,5 @@ foreach(v ${all_examples})
     string(REGEX REPLACE ".cpp" "" target_name ${target_name})
 
     add_executable(${target_name} ${v})
-    target_link_libraries(${target_name} PRIVATE pygen)
+    target_link_libraries(${target_name} PRIVATE pygen fmt::fmt)
 endforeach()

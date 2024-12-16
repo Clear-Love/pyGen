@@ -7,12 +7,18 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <memory>
 
 namespace pygen {
 
+namespace details {
+    std::vector<std::string> Split(const std::string& src,  const std::string& sep);
+}
+
+
 class PyVal {
 public:
-    PyVal(const std::string &name, const std::string &type)
+    PyVal(const std::string &name="", const std::string &type="None")
         : name(name), type(type) {
     }
     std::string name;
@@ -25,24 +31,26 @@ class else_ctx;
  *
  */
 class Context {
-public:
-    virtual ~Context() = 0;
-
 protected:
-    Context(uint32_t indent = 0)
-        : indent(indent) {}; // 构造函数私有，只能有pyFile构造出来
-    virtual std::string generate() = 0; // 输出到字符串
+    friend class PyFile;
+    virtual ~Context() = default;
+    Context(uint32_t indent = 0): indent(indent), code(new std::string("")) {}; // 构造函数私有，只能有pyFile构造出来
+    Context(uint32_t indent, std::shared_ptr<std::string> code): indent(indent), code(code) {}; 
+    virtual std::string generate() { return *code;}; // 输出到字符串
     uint32_t indent;                    // 缩进数
-    std::string code;
-    void writeLine(std::string line) {
-        std::ostringstream oss(code);
-        for (int i = 0; i < indent; i++) {
-            oss << "    "; // 一个缩进四个空格
+    std::shared_ptr<std::string> code;
+    template <typename... T>
+    void writeLine(fmt::format_string<T...> fmt, T&&... args) {
+        auto s = fmt::format(fmt, args...);
+        auto lines = details::Split(s, "\n");
+        for (auto& line: lines) {
+            for (int i = 0; i < indent; i++) {
+                code->append("    "); // 一个缩进四个空格
+            }
+            code->append(line);
+            code->append("\n");
         }
-        oss << line << '\n';
     };
-    // 删除移动构造
-    Context(Context &&) = delete;
 };
 
 /**
@@ -51,31 +59,21 @@ protected:
  */
 class body_ctx : public Context {
 public:
-    body_ctx(int indent) : Context(indent) {};
-    std::string generate() override {
-        return code;
-    };
-
-    /**
-     * @brief 函数体语句，变量初始化或者赋值
-     *
-     * @param val
-     * @param expr 表达式
-     */
-    void statment(const PyVal &val, const std::string &expr) {};
-
     /**
      * @brief 任意表达式或函数调用
      *
      * @param expr 表达式
      */
-    void statment(const std::string &expr) {};
+    template <typename... T>
+    void statment(fmt::format_string<T...> fmt, T&&... args) {
+        writeLine(fmt, args...);
+    };
     // 条件语句
-    else_ctx &ifCtx(const std::string &condition,
-                    std::function<void(body_ctx &)> body) {};
+    else_ctx &ifCtx(const std::string& condition,
+                    std::function<void(body_ctx &)> body);
     // 循环语句
-    void whileCtx(const std::string &condition,
-                  std::function<void(body_ctx &)> body) {};
+    void whileCtx(const std::string& condition,
+                  std::function<void(body_ctx &)> body);
 
     /**
      * @brief for循环语句
@@ -85,8 +83,8 @@ public:
      * @param end 结束值，取不到
      * @param body 循环体回调函数
      */
-    void forCtx(const std::string &idx, int start, int end,
-                std::function<void(body_ctx &)> body) {};
+    void forCtx(const std::string& idx, int start, int end,
+                std::function<void(body_ctx &)> body);
 
     /**
      * @brief 迭代对象 eg：for i, v in enumerate(iterable):
@@ -98,17 +96,19 @@ public:
      */
     void forenumCtx(const std::string &idx, const std::string &it,
                     const std::string &iter,
-                    std::function<void(body_ctx &)> body) {};
+                    std::function<void(body_ctx &)> body);
+protected:
+    body_ctx(int indent) : Context(indent) {};
+    body_ctx(int indent, std::shared_ptr<std::string> code) : Context(indent) {};
+    friend class PyFile;
+    friend class func_ctx;
+    friend class else_ctx;
+    std::vector<else_ctx> ctxs;
 };
 
 class else_ctx : public body_ctx {
 public:
-    else_ctx(int indent) : body_ctx(indent) {
-    }
-    std::string generate() override {
-        return code;
-    }
-
+    else_ctx(int indent, std::shared_ptr<std::string> code): body_ctx(indent, code) {};
     /**
      * @brief else 语句 链式调用的结尾，没有返回值
      *
@@ -124,54 +124,74 @@ public:
      * @return else_ctx&
      */
     else_ctx &elifCtx(const std::string &condition,
-                      std::function<void(body_ctx &)> body) {};
+                      std::function<void(body_ctx &)> body);
 };
 
 class func_ctx : public Context {
-public:
-    func_ctx(const std::string &name, const std::vector<PyVal> &params,
-             const PyVal &retval, const std::string &comment,
-             std::function<void(body_ctx, std::vector<PyVal>, PyVal)> body)
-        : name(name), params(params), retval(retval), comment(comment) {};
-
 private:
-    std::string generate() override {
-        //writeLine(fmt::format("def {}({}):", name, fmt::join(params, ", ")));
-        indent++;
-        writeLine(fmt::format("\"\"\" {} \"\"\"", comment));
-        return code;
-    };
-
-    std::string name;
-    std::vector<PyVal> params;
-    PyVal retval;
-    std::string comment;
-    std::function<void(func_ctx, std::vector<PyVal>, PyVal)> body;
+    friend class cls_ctx;
+    friend class PyFile;
+    func_ctx(const std::string& name, const std::vector<PyVal> &params,
+             const std::vector<PyVal> &retvals, const std::string& comment, int indent,
+             std::function<void(body_ctx&)> body);
 };
 
 class cls_ctx : public Context {
 public:
-    cls_ctx(const std::string &name, const std::string &comment)
-        : name(name), comment(comment) {};
-    std::string generate() override {
-        writeLine(fmt::format("class {}:", name));
-        indent++;
-        writeLine(fmt::format("\"\"\" {} \"\"\"", comment));
-        return code;
-    };
-
     void
-    addMemFunc(const std::string &name, const std::vector<PyVal> &params,
-               const PyVal &retval, const std::string &comment,
-               std::function<void(body_ctx, std::vector<PyVal>, PyVal)> body) {
-    };
-    void
-    initFunc(const std::vector<PyVal> &params, const std::string &comment,
-             std::function<void(body_ctx, std::vector<PyVal>, PyVal)> body) {};
+    addMemFunc(const std::string& name, std::vector<PyVal> params,
+               std::vector<PyVal> retvals, const std::string& comment,
+               std::function<void(body_ctx&)> body);
+    void addMemVal(PyVal val);
+    void addMemVal(std::initializer_list<PyVal> vals);
 
+protected:
+    friend class PyFile;
+    cls_ctx(const std::string& name, const std::string& comment,
+     int indent): name(name), comment(comment), Context(indent) {};
+    cls_ctx(int indent): Context(indent){};
+    std::string generate() override;
 private:
+    std::vector<PyVal> MemVals{{"self", ""}};
     std::string name;
     std::string comment;
-    std::vector<Context> members;
 };
+
+class PyFile {
+private:
+    std::ofstream file;
+    body_ctx header; // 文件头：import语句
+    body_ctx vals; // 全局变量
+    std::vector<func_ctx> funcs; // 函数
+    std::vector<cls_ctx> clss; // 自定义类
+
+    void write(); // 写入到文件中
+
+public:
+    explicit PyFile(const std::string& filename)
+        : file(filename, std::ios::out), header(0), vals(0) {
+        if (!file.is_open()) {
+            std::cerr << fmt::format("Failed to open file: {}", filename) << '\n';
+            throw std::runtime_error("Failed to open file: " + filename);
+        }
+    }
+
+    ~PyFile() {
+        if (file.is_open()) {
+            write();
+            file.close();
+        } else {
+        }
+    }
+
+    void addClass(const std::string& name, const std::string& comment, std::function<void(cls_ctx&)> body);
+    void addFuncs(const std::string& name, std::vector<PyVal> params,
+             std::vector<PyVal> retvals, const std::string& comment,
+             std::function<void(body_ctx&)> body);
+    
+    void import(const std::string& lib, std::initializer_list<std::string> mods);
+    void import(const std::string& lib);
+    void expr(const std::string& expr);
+};
+
 }; // namespace pygen

@@ -7,4 +7,4 @@ add_library(pygen STATIC ${srcs})
 target_link_libraries(pygen PRIVATE fmt::fmt)
 
 # 设置头文件目录
-target_include_directories(pygen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(pygen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
